@@ -1,30 +1,40 @@
 <?php
-// survey.php - หน้าตอบแบบสอบถาม
+// survey.php - หน้าตอบแบบสอบถาม (แก้ไขปัญหาอัพโหลด)
 require_once 'config.php';
+
+// ตรวจสอบและสร้างโฟลเดอร์ uploads
+if (!file_exists('uploads')) {
+    mkdir('uploads', 0777, true);
+    chmod('uploads', 0777);
+}
 
 // ตรวจสอบการส่งฟอร์ม
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
-        // จัดการการอัพโหลดรูปภาพ
+        // จัดการการอัพโหลดรูปภาพ - แก้ไขจากเดิม
         $uploadedImages = [];
-        if (isset($_FILES['damage_images'])) {
+        if (isset($_FILES['damage_images']) && !empty($_FILES['damage_images']['name'][0])) {
             $uploadDir = 'uploads/';
-            if (!file_exists($uploadDir)) {
-                mkdir($uploadDir, 0777, true);
-            }
             
             foreach ($_FILES['damage_images']['tmp_name'] as $key => $tmpName) {
                 if (!empty($tmpName) && $_FILES['damage_images']['error'][$key] === 0) {
-                    $fileName = time() . '_' . $key . '_' . $_FILES['damage_images']['name'][$key];
-                    $targetPath = $uploadDir . $fileName;
+                    // ตรวจสอบประเภทไฟล์อย่างถูกต้อง
+                    $fileInfo = finfo_open(FILEINFO_MIME_TYPE);
+                    $fileType = finfo_file($fileInfo, $tmpName);
+                    finfo_close($fileInfo);
                     
-                    // ตรวจสอบประเภทไฟล์
                     $allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
-                    $fileType = $_FILES['damage_images']['type'][$key];
+                    $maxFileSize = 5 * 1024 * 1024; // 5MB
                     
-                    if (in_array($fileType, $allowedTypes) && $_FILES['damage_images']['size'][$key] <= 5000000) {
+                    if (in_array($fileType, $allowedTypes) && $_FILES['damage_images']['size'][$key] <= $maxFileSize) {
+                        // สร้างชื่อไฟล์ที่ไม่ซ้ำ
+                        $extension = pathinfo($_FILES['damage_images']['name'][$key], PATHINFO_EXTENSION);
+                        $fileName = uniqid() . '_' . time() . '_' . $key . '.' . $extension;
+                        $targetPath = $uploadDir . $fileName;
+                        
                         if (move_uploaded_file($tmpName, $targetPath)) {
                             $uploadedImages[] = $fileName;
+                            chmod($targetPath, 0644); // ตั้งสิทธิ์ไฟล์
                         }
                     }
                 }
@@ -36,17 +46,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             return (empty($value) || $value === '') ? null : $value;
         }
 
+        // ฟังก์ชันจัดการข้อมูล checkbox พร้อมตัวเลือก "อื่นๆ"
+        function processCheckboxData($checkboxData, $otherText) {
+            $result = [];
+            if (isset($checkboxData) && is_array($checkboxData)) {
+                $result = $checkboxData;
+            }
+            
+            // เพิ่มข้อความ "อื่นๆ" ถ้ามี
+            if (!empty($otherText)) {
+                $result[] = "อื่นๆ: " . $otherText;
+            }
+            
+            return !empty($result) ? json_encode($result, JSON_UNESCAPED_UNICODE) : null;
+        }
+
         // เตรียมข้อมูลสำหรับบันทึก
-        $houseDamageParts = isset($_POST['house_damage_parts']) ? json_encode($_POST['house_damage_parts']) : null;
-        $vehicleTypes = isset($_POST['vehicle_types']) ? json_encode($_POST['vehicle_types']) : null;
-        $applianceTypes = isset($_POST['appliance_types']) ? json_encode($_POST['appliance_types']) : null;
-        $cropTypes = isset($_POST['crop_types']) ? json_encode($_POST['crop_types']) : null;
-        $livestockTypes = isset($_POST['livestock_types']) ? json_encode($_POST['livestock_types']) : null;
-        $farmStructureTypes = isset($_POST['farm_structure_types']) ? json_encode($_POST['farm_structure_types']) : null;
-        $damageImages = !empty($uploadedImages) ? json_encode($uploadedImages) : null;
+        $houseDamageParts = processCheckboxData(
+            $_POST['house_damage_parts'] ?? null, 
+            $_POST['house_damage_parts_other'] ?? null
+        );
+        
+        $vehicleTypes = processCheckboxData(
+            $_POST['vehicle_types'] ?? null, 
+            $_POST['vehicle_types_other'] ?? null
+        );
+        
+        $applianceTypes = processCheckboxData(
+            $_POST['appliance_types'] ?? null, 
+            $_POST['appliance_types_other'] ?? null
+        );
+        
+        $cropTypes = processCheckboxData(
+            $_POST['crop_types'] ?? null, 
+            $_POST['crop_types_other'] ?? null
+        );
+        
+        $livestockTypes = processCheckboxData(
+            $_POST['livestock_types'] ?? null, 
+            $_POST['livestock_types_other'] ?? null
+        );
+        
+        $farmStructureTypes = processCheckboxData(
+            $_POST['farm_structure_types'] ?? null, 
+            $_POST['farm_structure_types_other'] ?? null
+        );
+        
+        $damageImages = !empty($uploadedImages) ? json_encode($uploadedImages, JSON_UNESCAPED_UNICODE) : null;
 
         $sql = "INSERT INTO survey_responses (
-            respondent_type, age, gender, address, border_distance,
+            respondent_type, age, gender, border_distance,
+            first_name, last_name, phone_number, address,
             house_damage, house_damage_parts, house_repair_cost,
             vehicle_damage, vehicle_types, vehicle_repair_cost,
             appliance_damage, appliance_types, appliance_repair_cost,
@@ -54,15 +104,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             livestock_impact, livestock_types, livestock_loss_cost,
             farm_structure_damage, farm_structure_types, farm_structure_cost,
             total_damage_cost, has_insurance, insurance_help, self_repair, damage_images
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         $stmt = $pdo->prepare($sql);
-        $stmt->execute([
+        $success = $stmt->execute([
             $_POST['respondent_type'], 
             $_POST['age'], 
             $_POST['gender'], 
-            $_POST['address'], 
             $_POST['border_distance'],
+            emptyToNull($_POST['first_name'] ?? null),
+            emptyToNull($_POST['last_name'] ?? null), 
+            emptyToNull($_POST['phone_number'] ?? null),
+            emptyToNull($_POST['address'] ?? null),
             $_POST['house_damage'], 
             $houseDamageParts, 
             emptyToNull($_POST['house_repair_cost'] ?? null),
@@ -88,9 +141,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $damageImages
         ]);
 
-        $successMessage = true;
-    } catch(PDOException $e) {
-        $errorMessage = "ไม่สามารถบันทึกข้อมูลได้: " . $e->getMessage();
+        if ($success) {
+            $successMessage = true;
+            $uploadCount = count($uploadedImages);
+        } else {
+            throw new Exception("ไม่สามารถบันทึกข้อมูลได้");
+        }
+
+    } catch(Exception $e) {
+        $errorMessage = "เกิดข้อผิดพลาด: " . $e->getMessage();
+        // ลบไฟล์ที่อัพโหลดแล้วหากเกิดข้อผิดพลาด
+        foreach ($uploadedImages as $image) {
+            if (file_exists('uploads/' . $image)) {
+                unlink('uploads/' . $image);
+            }
+        }
     }
 }
 ?>
@@ -251,9 +316,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: inline-block;
         }
 
-        .btn-submit:hover {
+        .btn-submit:hover:not(:disabled) {
             transform: translateY(-2px);
             box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+
+        .btn-submit:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
         }
 
         .hidden {
@@ -327,6 +397,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 10px;
             text-align: center;
             background: #f8fafc;
+            transition: all 0.3s;
         }
 
         .file-upload-container.dragover {
@@ -505,6 +576,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 width: 100%;
             }
         }
+
+        /* เพิ่ม Style สำหรับการแสดงข้อผิดพลาด */
+        .error-message {
+            color: #e53e3e;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+
+        .upload-info {
+            background: #e6fffa;
+            border: 1px solid #38b2ac;
+            color: #234e52;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            text-align: left;
+        }
     </style>
 </head>
 <body>
@@ -520,6 +608,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div style="font-size: 48px; margin-bottom: 15px;">✓</div>
                     <h2>บันทึกข้อมูลสำเร็จ!</h2>
                     <p>ขอบคุณสำหรับการตอบแบบสอบถาม ข้อมูลของท่านได้รับการบันทึกเรียบร้อยแล้ว</p>
+                    <?php if (isset($uploadCount) && $uploadCount > 0): ?>
+                        <p style="margin-top: 10px;">📷 อัพโหลดรูปภาพเรียบร้อย <?= $uploadCount ?> ภาพ</p>
+                    <?php endif; ?>
                 </div>
             <?php endif; ?>
 
@@ -594,10 +685,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label for="address">ที่อยู่:</label>
-                        <textarea id="address" name="address" rows="3" required placeholder="กรุณากรอกที่อยู่ของท่าน"></textarea>
-                    </div>
+
 
                     <div class="form-group">
                         <label>ระยะห่างจากชายแดน:</label>
@@ -680,6 +768,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <input type="checkbox" name="house_damage_parts[]" value="รั้ว">
                                     <span>รั้ว</span>
                                 </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="house_other_checkbox" onchange="toggleOtherInput('house')">
+                                    <span>อื่นๆ</span>
+                                </div>
+                            </div>
+                            <div id="house_other_input" class="other-input-container">
+                                <input type="text" name="house_damage_parts_other" class="other-input" placeholder="กรุณาระบุ ส่วนอื่นๆ ที่เสียหาย...">
                             </div>
                         </div>
 
@@ -756,6 +851,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <input type="checkbox" name="vehicle_types[]" value="เรือ">
                                     <span>เรือ</span>
                                 </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="vehicle_other_checkbox" onchange="toggleOtherInput('vehicle')">
+                                    <span>อื่นๆ</span>
+                                </div>
+                            </div>
+                            <div id="vehicle_other_input" class="other-input-container">
+                                <input type="text" name="vehicle_types_other" class="other-input" placeholder="กรุณาระบุ ประเภทยานพาหนะอื่นๆ...">
                             </div>
                         </div>
 
@@ -828,6 +930,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <input type="checkbox" name="appliance_types[]" value="โทรศัพท์">
                                     <span>โทรศัพท์</span>
                                 </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="appliance_other_checkbox" onchange="toggleOtherInput('appliance')">
+                                    <span>อื่นๆ</span>
+                                </div>
+                            </div>
+                            <div id="appliance_other_input" class="other-input-container">
+                                <input type="text" name="appliance_types_other" class="other-input" placeholder="กรุณาระบุ เครื่องใช้ไฟฟ้าอื่นๆ...">
                             </div>
                         </div>
 
@@ -903,6 +1012,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     <input type="checkbox" name="crop_types[]" value="ไม้ยืนต้น">
                                     <span>ไม้ยืนต้น</span>
                                 </div>
+                                <div class="checkbox-item">
+                                    <input type="checkbox" id="crop_other_checkbox" onchange="toggleOtherInput('crop')">
+                                    <span>อื่นๆ</span>
+                                </div>
+                            </div>
+                            <div id="crop_other_input" class="other-input-container">
+                                <input type="text" name="crop_types_other" class="other-input" placeholder="กรุณาระบุ ประเภทพืชผลอื่นๆ...">
                             </div>
                         </div>
 
@@ -968,6 +1084,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         <input type="checkbox" name="livestock_types[]" value="ปลา">
                                         <span>ปลา</span>
                                     </div>
+                                    <div class="checkbox-item">
+                                        <input type="checkbox" id="livestock_other_checkbox" onchange="toggleOtherInput('livestock')">
+                                        <span>อื่นๆ</span>
+                                    </div>
+                                </div>
+                                <div id="livestock_other_input" class="other-input-container">
+                                    <input type="text" name="livestock_types_other" class="other-input" placeholder="กรุณาระบุ ประเภทปศุสัตว์อื่นๆ...">
                                 </div>
                             </div>
 
@@ -1038,6 +1161,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                         <input type="checkbox" name="farm_structure_types[]" value="รั้วไร่/สวน">
                                         <span>รั้วไร่/สวน</span>
                                     </div>
+                                    <div class="checkbox-item">
+                                        <input type="checkbox" id="farm_structure_other_checkbox" onchange="toggleOtherInput('farm_structure')">
+                                        <span>อื่นๆ</span>
+                                    </div>
+                                </div>
+                                <div id="farm_structure_other_input" class="other-input-container">
+                                    <input type="text" name="farm_structure_types_other" class="other-input" placeholder="กรุณาระบุ สิ่งปลูกสร้างอื่นๆ...">
                                 </div>
                             </div>
 
@@ -1070,6 +1200,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     <!-- ส่วนประเมินมูลค่า (แสดงเฉพาะเมื่อมีความเสียหาย) -->
                     <div id="damageEvaluationSection" class="hidden">
+                        <!-- ข้อมูลส่วนตัวสำหรับผู้ได้รับความเสียหาย -->
+                        <div style="background: #f0f9ff; padding: 20px; border-radius: 10px; margin-bottom: 25px; border-left: 4px solid #4299e1;">
+                            <h3 style="color: #2d3748; margin-bottom: 15px; font-size: 18px;">📝 ข้อมูลส่วนตัวสำหรับการติดต่อกลับ</h3>
+                            <p style="color: #4a5568; margin-bottom: 20px; font-size: 14px;">
+                                เนื่องจากท่านได้รับความเสียหาย กรุณากรอกข้อมูลเพิ่มเติมเพื่อการติดต่อและประสานงาน
+                            </p>
+                            
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label for="first_name">ชื่อ: <span style="color: #e53e3e;">*</span></label>
+                                    <input type="text" id="first_name" name="first_name" required placeholder="กรุณากรอกชื่อ">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label for="last_name">นามสกุล: <span style="color: #e53e3e;">*</span></label>
+                                    <input type="text" id="last_name" name="last_name" required placeholder="กรุณากรอกนามสกุล">
+                                </div>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="phone_number">เบอร์โทรศัพท์: <span style="color: #e53e3e;">*</span></label>
+                                <input type="tel" id="phone_number" name="phone_number" required placeholder="08X-XXX-XXXX" pattern="[0-9\-\s\+\(\)]{8,15}">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="address">ที่อยู่: <span style="color: #e53e3e;">*</span></label>
+                                <textarea id="address" name="address" rows="3" required placeholder="กรุณากรอกที่อยู่ที่สามารถติดต่อได้"></textarea>
+                            </div>
+                        </div>
                         <div class="form-group">
                             <label>ประเมินมูลค่าความเสียหายทั้งหมด:</label>
                             <div class="radio-group">
@@ -1166,7 +1324,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             </div>
                         </div>
 
-                        <!-- ส่วนอัพโหลดรูปภาพ -->
+                        <!-- ส่วนอัพโหลดรูปภาพ - แก้ไขแล้ว -->
                         <div class="form-group">
                             <label>📷 รูปภาพประกอบความเสียหาย (ไม่เกิน 8 ภาพ)</label>
                             <div class="file-upload-container" id="fileUploadContainer">
@@ -1184,12 +1342,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 
                                 <!-- Progress Bar สำหรับอัพโหลด -->
                                 <div id="uploadProgress" class="upload-progress">
-                                    <p>🔄 กำลังอัพโหลดรูปภาพ...</p>
+                                    <p>🔄 กำลังเตรียมรูปภาพ...</p>
                                     <div class="progress-bar-upload">
                                         <div id="progressFillUpload" class="progress-fill-upload"></div>
                                     </div>
                                     <p id="uploadStatus">กำลังเตรียมการอัพโหลด...</p>
                                 </div>
+                            </div>
+                            
+                            <!-- ข้อมูลเพิ่มเติมสำหรับการอัพโหลด -->
+                            <div class="upload-info" style="display: none;" id="uploadInfo">
+                                <strong>ℹ️ ข้อมูลการอัพโหลด:</strong>
+                                <ul style="margin: 10px 0; padding-left: 20px;">
+                                    <li>ไฟล์ที่รองรับ: JPG, JPEG, PNG, GIF</li>
+                                    <li>ขนาดไฟล์ไม่เกิน 5MB ต่อไฟล์</li>
+                                    <li>สามารถอัพโหลดได้สูงสุด 8 ภาพ</li>
+                                    <li>รูปภาพจะถูกเก็บไว้ที่เซิร์ฟเวอร์อย่างปลอดภัย</li>
+                                </ul>
                             </div>
                         </div>
                     </div>
@@ -1232,6 +1401,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <script>
         let selectedFiles = [];
         const maxFiles = 8;
+        const maxFileSize = 5 * 1024 * 1024; // 5MB
+
+        // ฟังก์ชันสำหรับ toggle การแสดง input "อื่นๆ"
+        function toggleOtherInput(type) {
+            const checkbox = document.getElementById(type + '_other_checkbox');
+            const inputContainer = document.getElementById(type + '_other_input');
+            const inputField = inputContainer.querySelector('input');
+            
+            if (checkbox.checked) {
+                inputContainer.classList.add('show');
+                setTimeout(() => {
+                    inputField.focus();
+                }, 300);
+            } else {
+                inputContainer.classList.remove('show');
+                inputField.value = '';
+            }
+        }
 
         // Conditional Logic สำหรับซ่อน/แสดงคำถาม
         function toggleDamageDetails(type) {
@@ -1278,14 +1465,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         input.value = '';
                     }
                     input.removeAttribute('required');
-                });
-            } else {
-                // เพิ่ม required เมื่อแสดง
-                const selects = container.querySelectorAll('select');
-                selects.forEach(select => {
-                    if (select.name.includes('cost')) {
-                        select.setAttribute('required', 'true');
-                    }
                 });
             }
 
@@ -1351,9 +1530,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 noDamageMessage.style.display = 'none';
                 noDamageMessage.classList.add('hidden');
 
-                // เพิ่ม required attributes
-                const requiredInputs = evaluationSection.querySelectorAll('input[name="total_damage_cost"], input[name="has_insurance"], input[name="insurance_help"], input[name="self_repair"]');
-                requiredInputs.forEach(input => input.setAttribute('required', 'true'));
+                // แสดงข้อมูลการอัพโหลด
+                document.getElementById('uploadInfo').style.display = 'block';
+
+                // เพิ่ม required attributes สำหรับข้อมูลส่วนตัว
+                const personalFields = ['first_name', 'last_name', 'phone_number', 'address'];
+                personalFields.forEach(fieldName => {
+                    const field = document.getElementById(fieldName);
+                    if (field) field.setAttribute('required', 'true');
+                });
                 
             } else {
                 summary.className = 'damage-summary no-damage';
@@ -1365,8 +1550,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 noDamageMessage.style.display = 'none';
                 noDamageMessage.classList.add('hidden');
 
+                // ซ่อนข้อมูลการอัพโหลด
+                document.getElementById('uploadInfo').style.display = 'none';
+
                 // ลบ required attributes และ clear values
-                const inputs = evaluationSection.querySelectorAll('input, select');
+                const inputs = evaluationSection.querySelectorAll('input, select, textarea');
                 inputs.forEach(input => {
                     input.removeAttribute('required');
                     if (input.type === 'radio') {
@@ -1375,10 +1563,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         input.value = '';
                     }
                 });
+
+                // เคลียร์ไฟล์ที่เลือก
+                selectedFiles = [];
+                updateFilePreview();
+                updateFileInput();
             }
         }
 
-        // จัดการการเลือกไฟล์
+        // จัดการการเลือกไฟล์ - แก้ไขแล้ว
         function handleFileSelect(files) {
             if (selectedFiles.length + files.length > maxFiles) {
                 alert(`สามารถอัพโหลดได้ไม่เกิน ${maxFiles} ภาพ`);
@@ -1391,16 +1584,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             const uploadStatus = document.getElementById('uploadStatus');
             
             uploadProgress.style.display = 'block';
-            uploadStatus.textContent = 'กำลังเตรียมไฟล์...';
+            uploadStatus.textContent = 'กำลังตรวจสอบไฟล์...';
             progressFill.style.width = '20%';
 
             let validFiles = 0;
+            let errorMessages = [];
+
             for (let i = 0; i < files.length && selectedFiles.length < maxFiles; i++) {
                 const file = files[i];
-                if (file.type.startsWith('image/') && file.size <= 5000000) {
-                    selectedFiles.push(file);
-                    validFiles++;
+                
+                // ตรวจสอบประเภทไฟล์
+                if (!file.type.startsWith('image/')) {
+                    errorMessages.push(`${file.name}: ไม่ใช่ไฟล์รูปภาพ`);
+                    continue;
                 }
+
+                // ตรวจสอบขนาดไฟล์
+                if (file.size > maxFileSize) {
+                    errorMessages.push(`${file.name}: ขนาดไฟล์เกิน 5MB`);
+                    continue;
+                }
+
+                // ตรวจสอบนามสกุลไฟล์
+                const allowedExtensions = ['jpg', 'jpeg', 'png', 'gif'];
+                const fileExtension = file.name.split('.').pop().toLowerCase();
+                if (!allowedExtensions.includes(fileExtension)) {
+                    errorMessages.push(`${file.name}: นามสกุลไฟล์ไม่รองรับ`);
+                    continue;
+                }
+
+                selectedFiles.push(file);
+                validFiles++;
+            }
+
+            // แสดงข้อผิดพลาดถ้ามี
+            if (errorMessages.length > 0) {
+                alert('พบข้อผิดพลาด:\n' + errorMessages.join('\n'));
             }
 
             // อัพเดท progress
@@ -1503,166 +1722,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // อัพเดทแถบความคืบหน้า
         function updateProgress() {
-    const sections = document.querySelectorAll('.section');
-    let completed = 0;
+            const sections = document.querySelectorAll('.section');
+            let completed = 0;
 
-    sections.forEach(section => {
-        const requiredInputs = section.querySelectorAll('input[required], select[required], textarea[required]');
-        let sectionCompleted = true;
+            sections.forEach(section => {
+                const requiredInputs = section.querySelectorAll('input[required], select[required], textarea[required]');
+                let sectionCompleted = true;
 
-        requiredInputs.forEach(input => {
-            if (input.type === 'radio') {
-                const radioGroup = section.querySelectorAll(`input[name="${input.name}"]`);
-                const isChecked = Array.from(radioGroup).some(radio => radio.checked);
-                if (!isChecked) sectionCompleted = false;
-            } else if (input.type === 'file') {
-                // ตรวจสอบว่ามีไฟล์แนบหรือไม่
-                if (!input.files || input.files.length === 0) {
-                    sectionCompleted = false;
-                }
-            } else if (!input.value.trim()) {
-                sectionCompleted = false;
-            }
-        });
-
-        if (sectionCompleted) completed++;
-    });
-
-    const progress = (completed / sections.length) * 100;
-    const progressFill = document.getElementById('progressFill');
-    if (progressFill) {
-        progressFill.style.width = progress + '%';
-    }
-}document.getElementById('surveyForm').addEventListener('submit', function(e) {
-    const requiredFields = ['respondent_type', 'age', 'gender', 'address', 'border_distance', 
-                            'house_damage', 'vehicle_damage', 'appliance_damage', 'crop_damage'];
-
-    let isValid = true;
-    let missingField = '';
-
-    // ตรวจสอบฟิลด์ที่จำเป็น
-    for (const field of requiredFields) {
-        const input = document.querySelector(`input[name="${field}"], select[name="${field}"], textarea[name="${field}"]`);
-        if (input && input.type === 'radio') {
-            const radioGroup = document.querySelectorAll(`input[name="${field}"]`);
-            const isChecked = Array.from(radioGroup).some(radio => radio.checked);
-            if (!isChecked) {
-                isValid = false;
-                missingField = field;
-                break;
-            }
-        } else if (input && !input.value.trim()) {
-            isValid = false;
-            missingField = field;
-            break;
-        }
-    }
-
-    // ตรวจสอบไฟล์แนบ
-    const fileInput = document.getElementById('fileInput');
-    if (fileInput && fileInput.files.length > 0) {
-        for (let i = 0; i < fileInput.files.length; i++) {
-            const file = fileInput.files[i];
-            if (!file.type.startsWith('image/') || file.size > 5000000) {
-                isValid = false;
-                alert('ไฟล์รูปภาพต้องเป็น JPG, PNG, หรือ GIF และขนาดไม่เกิน 5MB');
-                break;
-            }
-        }
-    }
-
-    if (!isValid) {
-        e.preventDefault();
-        alert(`กรุณากรอกข้อมูล: ${missingField}`);
-        return false;
-    }
-
-    // แสดง Loading UI
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    const loadingText = document.getElementById('loadingText');
-    const submitBtn = document.getElementById('submitBtn');
-
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'กำลังส่ง...';
-    loadingOverlay.style.display = 'flex';
-
-    if (fileInput.files.length > 0) {
-        loadingText.textContent = `กำลังอัพโหลดรูปภาพ ${fileInput.files.length} ภาพ กรุณารอสักครู่...`;
-    } else {
-        loadingText.textContent = 'กำลังบันทึกข้อมูล กรุณารอสักครู่...';
-    }
-
-    return true;
-});function updateFileInput() {
-    const fileInput = document.getElementById('fileInput');
-    const dt = new DataTransfer();
-
-    selectedFiles.forEach(file => {
-        dt.items.add(file);
-    });
-
-    fileInput.files = dt.files;
-}document.getElementById('surveyForm').addEventListener('submit', function (e) {
-    const fileInput = document.getElementById('fileInput');
-    const submitBtn = document.getElementById('submitBtn');
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    const loadingText = document.getElementById('loadingText');
-
-    // ตรวจสอบว่ามีไฟล์แนบหรือไม่
-    if (fileInput.files.length > 0) {
-        loadingText.textContent = `กำลังอัพโหลดรูปภาพ ${fileInput.files.length} ภาพ กรุณารอสักครู่...`;
-    } else {
-        loadingText.textContent = 'กำลังบันทึกข้อมูล กรุณารอสักครู่...';
-    }
-
-    // แสดง Loading UI
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'กำลังส่ง...';
-    loadingOverlay.style.display = 'flex';
-
-    return true;
-});
-
-function updateFileInput() {
-    const fileInput = document.getElementById('fileInput');
-    const dt = new DataTransfer();
-
-    selectedFiles.forEach(file => {
-        dt.items.add(file);
-    });
-
-    fileInput.files = dt.files;
-}
-        // เพิ่ม event listeners
-        document.addEventListener('DOMContentLoaded', function() {
-            const inputs = document.querySelectorAll('input, select, textarea');
-            inputs.forEach(input => {
-                input.addEventListener('change', function() {
-                    updateProgress();
-                    updateDamageSummary();
+                requiredInputs.forEach(input => {
+                    if (input.type === 'radio') {
+                        const radioGroup = section.querySelectorAll(`input[name="${input.name}"]`);
+                        const isChecked = Array.from(radioGroup).some(radio => radio.checked);
+                        if (!isChecked) sectionCompleted = false;
+                    } else if (!input.value.trim()) {
+                        sectionCompleted = false;
+                    }
                 });
-                input.addEventListener('input', updateProgress);
-            });
-            
-            setupDragAndDrop();
-            updateProgress();
-            updateDamageSummary();
-        });
 
-        // Form validation ก่อนส่ง
+                if (sectionCompleted) completed++;
+            });
+
+            const progress = (completed / sections.length) * 100;
+            const progressFill = document.getElementById('progressFill');
+            if (progressFill) {
+                progressFill.style.width = progress + '%';
+            }
+        }
+
+        // Form validation ก่อนส่ง - แก้ไขแล้ว
         document.getElementById('surveyForm').addEventListener('submit', function(e) {
-            // แสดง Loading
-            const loadingOverlay = document.getElementById('loadingOverlay');
-            const loadingText = document.getElementById('loadingText');
-            const submitBtn = document.getElementById('submitBtn');
-            
-            // ตรวจสอบข้อมูลพื้นฐานที่จำเป็น
-            const requiredFields = ['respondent_type', 'age', 'gender', 'address', 'border_distance', 
+            const requiredFields = ['respondent_type', 'age', 'gender', 'border_distance', 
                                    'house_damage', 'vehicle_damage', 'appliance_damage', 'crop_damage'];
-            
+
             let isValid = true;
             let missingField = '';
-            
+
+            // ตรวจสอบฟิลด์ที่จำเป็น
             for (const field of requiredFields) {
                 const input = document.querySelector(`input[name="${field}"], select[name="${field}"], textarea[name="${field}"]`);
                 if (input && input.type === 'radio') {
@@ -1679,46 +1774,111 @@ function updateFileInput() {
                     break;
                 }
             }
-            
+
+            // ถ้ามีความเสียหาย ตรวจสอบข้อมูลส่วนตัว
+            if (checkIfHasDamage()) {
+                const personalFields = ['first_name', 'last_name', 'phone_number', 'address', 'total_damage_cost', 'has_insurance', 'insurance_help', 'self_repair'];
+                for (const field of personalFields) {
+                    const input = document.querySelector(`input[name="${field}"], select[name="${field}"], textarea[name="${field}"]`);
+                    if (input && input.type === 'radio') {
+                        const radioGroup = document.querySelectorAll(`input[name="${field}"]`);
+                        const isChecked = Array.from(radioGroup).some(radio => radio.checked);
+                        if (!isChecked) {
+                            isValid = false;
+                            missingField = field;
+                            break;
+                        }
+                    } else if (input && !input.value.trim()) {
+                        isValid = false;
+                        missingField = field;
+                        break;
+                    }
+                }
+            }
+
+            // ตรวจสอบว่ามีการเลือกไฟล์หรือไม่ ถ้ามีต้องตรวจสอบความถูกต้อง
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput && fileInput.files.length > 0) {
+                for (let i = 0; i < fileInput.files.length; i++) {
+                    const file = fileInput.files[i];
+                    if (!file.type.startsWith('image/') || file.size > maxFileSize) {
+                        isValid = false;
+                        alert('ไฟล์รูปภาพต้องเป็น JPG, PNG, หรือ GIF และขนาดไม่เกิน 5MB');
+                        e.preventDefault();
+                        return false;
+                    }
+                }
+            }
+
             if (!isValid) {
                 e.preventDefault();
-                alert(`กรุณากรอกข้อมูล: ${missingField}`);
+                
+                // แสดงข้อความที่เป็นมิตรกับผู้ใช้
+                const fieldNames = {
+                    'respondent_type': 'กลุ่มผู้ตอบ',
+                    'age': 'อายุ',
+                    'gender': 'เพศ',
+                    'border_distance': 'ระยะห่างจากชายแดน',
+                    'house_damage': 'ความเสียหายของบ้าน',
+                    'vehicle_damage': 'ความเสียหายของยานพาหนะ',
+                    'appliance_damage': 'ความเสียหายของเครื่องใช้ไฟฟ้า',
+                    'crop_damage': 'ความเสียหายของพืชผล',
+                    'first_name': 'ชื่อ',
+                    'last_name': 'นามสกุล',
+                    'phone_number': 'เบอร์โทรศัพท์',
+                    'address': 'ที่อยู่',
+                    'total_damage_cost': 'มูลค่าความเสียหายรวม',
+                    'has_insurance': 'การมีประกันภัย',
+                    'insurance_help': 'ความช่วยเหลือจากประกันภัย',
+                    'self_repair': 'การซ่อมแซมด้วยตนเอง'
+                };
+                
+                alert(`กรุณากรอกข้อมูล: ${fieldNames[missingField] || missingField}`);
                 return false;
             }
 
             // แสดง Loading UI
+            const loadingOverlay = document.getElementById('loadingOverlay');
+            const loadingText = document.getElementById('loadingText');
+            const submitBtn = document.getElementById('submitBtn');
+
             submitBtn.disabled = true;
             submitBtn.textContent = 'กำลังส่ง...';
             loadingOverlay.style.display = 'flex';
-            
-            if (selectedFiles.length > 0) {
-                loadingText.textContent = `กำลังอัพโหลดรูปภาพ ${selectedFiles.length} ภาพ กรุณารอสักครู่...`;
+
+            if (fileInput && fileInput.files.length > 0) {
+                loadingText.textContent = `กำลังอัพโหลดรูปภาพ ${fileInput.files.length} ภาพ กรุณารอสักครู่...`;
             } else {
                 loadingText.textContent = 'กำลังบันทึกข้อมูล กรุณารอสักครู่...';
             }
 
-            // ปล่อยให้ฟอร์มส่งไปปกติ
             return true;
         });
 
-        // ตรวจสอบว่ามีความเสียหายหรือไม่
-        function checkIfHasDamage() {
-            const houseDamage = document.querySelector('input[name="house_damage"]:checked');
-            const vehicleDamage = document.querySelector('input[name="vehicle_damage"]:checked');
-            const applianceDamage = document.querySelector('input[name="appliance_damage"]:checked');
-            const cropDamage = document.querySelector('input[name="crop_damage"]:checked');
-            const livestockDamage = document.querySelector('input[name="livestock_impact"]:checked');
-            const farmStructureDamage = document.querySelector('input[name="farm_structure_damage"]:checked');
-
-            return (
-                (houseDamage && houseDamage.value !== 'ไม่เสียหาย') ||
-                (vehicleDamage && vehicleDamage.value !== 'ไม่เสียหาย' && vehicleDamage.value !== 'ไม่มียานพาหนะ') ||
-                (applianceDamage && applianceDamage.value !== 'ไม่เสียหาย') ||
-                (cropDamage && cropDamage.value !== 'ไม่เสียหาย' && cropDamage.value !== 'ไม่มี') ||
-                (livestockDamage && livestockDamage.value !== 'ไม่ได้รับผลกระทบ' && livestockDamage.value !== 'ไม่มี') ||
-                (farmStructureDamage && farmStructureDamage.value !== 'ไม่เสียหาย' && farmStructureDamage.value !== 'ไม่มี')
-            );
-        }
+        // เพิ่ม event listeners
+        document.addEventListener('DOMContentLoaded', function() {
+            const inputs = document.querySelectorAll('input, select, textarea');
+            inputs.forEach(input => {
+                input.addEventListener('change', function() {
+                    updateProgress();
+                    updateDamageSummary();
+                });
+                input.addEventListener('input', updateProgress);
+            });
+            
+            // เพิ่ม event listener สำหรับ input "อื่นๆ"
+            const otherInputs = document.querySelectorAll('.other-input');
+            otherInputs.forEach(input => {
+                input.addEventListener('input', function() {
+                    updateProgress();
+                    updateDamageSummary();
+                });
+            });
+            
+            setupDragAndDrop();
+            updateProgress();
+            updateDamageSummary();
+        });
 
         // ซ่อน Loading เมื่อกลับมาที่หน้า (กรณี submit ไม่สำเร็จ)
         window.addEventListener('pageshow', function() {

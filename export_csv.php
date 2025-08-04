@@ -1,5 +1,5 @@
 <?php
-// export_csv.php - ส่งออกข้อมูลเป็น CSV
+// export_csv.php - ส่งออกข้อมูลเป็น CSV (อัพเดทแล้ว)
 require_once 'config.php';
 
 // ตั้งค่า header สำหรับดาวน์โหลด CSV
@@ -21,8 +21,11 @@ $headers = [
     'กลุ่มผู้ตอบ',
     'อายุ',
     'เพศ',
-    'ที่อยู่',
     'ระยะห่างจากชายแดน',
+    'ชื่อ',
+    'นามสกุล',
+    'เบอร์โทรศัพท์',
+    'ที่อยู่',
     'ความเสียหายบ้าน',
     'ส่วนบ้านที่เสียหาย',
     'ค่าซ่อมบ้าน',
@@ -76,8 +79,11 @@ try {
             $row['respondent_type'],
             $row['age'],
             $row['gender'],
-            $row['address'],
             $row['border_distance'],
+            $row['first_name'] ?? '',
+            $row['last_name'] ?? '',
+            $row['phone_number'] ?? '',
+            $row['address'] ?? '',
             $row['house_damage'],
             $houseParts,
             $row['house_repair_cost'] ?? '',
